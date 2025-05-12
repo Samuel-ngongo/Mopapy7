@@ -1,51 +1,124 @@
+import streamlit as st
+import numpy as np
+from datetime import datetime
+import pandas as pd
 
-import random
-import matplotlib.pyplot as plt
+try:
+    from sklearn.linear_model import LinearRegression
+except ImportError:
+    LinearRegression = None
 
-historico = []
+st.set_page_config(page_title="Aviator PRO - IA Adaptativa Total", layout="centered")
+st.title("Aviator PRO - IA Inteligente com Padrões, Confiança e Histórico")
 
-def prever_proximo_valor(historico):
-    if not historico:
-        return "Aguardando dados suficientes...", 50
+if "valores" not in st.session_state:
+    st.session_state.valores = []
 
-    ultimos = historico[-10:]
-    altos = [v for v in ultimos if v > 2.0]
-    baixos = [v for v in ultimos if v <= 2.0]
+if "historico_completo" not in st.session_state:
+    st.session_state.historico_completo = []
 
-    if len(altos) >= 5:
-        return "Possível reversão: valores baixos podem aparecer", 65
-    elif len(baixos) >= 5:
-        return "Possível reversão: chance de valor alto em breve", 70
-    elif historico[-1] > 3.0 and historico[-2] > 3.0:
-        return "Alta sequência detectada: cuidado com queda", 60
-    elif historico[-1] < 1.5 and historico[-2] < 1.5:
-        return "Sequência baixa detectada: possível subida", 55
+novo = st.text_input("Insira um valor (ex: 2.31):")
+if st.button("Adicionar") and novo:
+    try:
+        valor = float(novo)
+        st.session_state.valores.append(valor)
+        st.session_state.historico_completo.append((valor, datetime.now().strftime("%d/%m/%Y %H:%M")))
+        st.success("Valor adicionado.")
+    except:
+        st.error("Formato inválido.")
 
-    media = sum(ultimos) / len(ultimos)
-    if media > 2.5:
-        return "Tendência geral: Alta", 60
-    elif media < 1.8:
-        return "Tendência geral: Baixa", 60
+def prever_valor(dados):
+    if len(dados) < 3:
+        return 1.50, 30, 1.3, 2.5
+
+    media_simples = np.mean(dados)
+    pesos = np.linspace(1, 2, len(dados))
+    media_ponderada = np.average(dados, weights=pesos)
+
+    if LinearRegression and len(dados) >= 5:
+        X = np.array(range(len(dados))).reshape(-1, 1)
+        y = np.array(dados)
+        modelo = LinearRegression()
+        modelo.fit(X, y)
+        reg_pred = modelo.predict(np.array([[len(dados) + 1]]))[0]
     else:
-        return "Tendência média: Análise neutra", 50
+        reg_pred = media_ponderada
 
-def adicionar_valor(valor):
-    historico.append(valor)
-    mensagem, confianca = prever_proximo_valor(historico)
-    print(f"Valor: {valor} | {mensagem} | Confianca: {confianca}%")
-    return mensagem, confianca
+    estimativa_final = (media_simples + media_ponderada + reg_pred) / 3
+    desvio = np.std(dados[-10:]) if len(dados) >= 10 else np.std(dados)
+    confianca = max(10, 100 - desvio * 100)
 
-# Exemplo de uso (simulação)
-for _ in range(30):
-    valor_simulado = round(random.uniform(1.0, 5.0), 2)
-    adicionar_valor(valor_simulado)
+    intervalo_inferior = max(0.5, estimativa_final - desvio * 1.5)
+    intervalo_superior = estimativa_final + desvio * 1.5
 
-# Gráfico
-plt.plot(historico, marker='o', linestyle='-', color='blue')
-plt.axhline(y=2.0, color='red', linestyle='--', label='Limite de análise')
-plt.title("Histórico de Valores")
-plt.xlabel("Rodadas")
-plt.ylabel("Valor")
-plt.legend()
-plt.grid(True)
-plt.show()
+    return round(estimativa_final, 2), round(confianca, 1), round(intervalo_inferior, 2), round(intervalo_superior, 2)
+
+def detectar_mudanca(dados):
+    if len(dados) < 15:
+        return False
+    ultimos = np.array(dados[-5:])
+    anteriores = np.array(dados[-10:-5])
+    media_diff = abs(np.mean(ultimos) - np.mean(anteriores))
+    desvio_diff = abs(np.std(ultimos) - np.std(anteriores))
+    return media_diff > 1.0 or desvio_diff > 1.2
+
+def analisar_padroes(dados):
+    alertas = []
+    if len(dados) >= 3:
+        ultimos3 = dados[-3:]
+        if all(v < 1.5 for v in ultimos3):
+            alertas.append(("Queda contínua detectada", 70))
+        if all(v > 2.5 for v in ultimos3):
+            alertas.append(("Alta contínua detectada", 65))
+        if len(set(np.sign(np.diff(ultimos3)))) > 1:
+            alertas.append(("Alternância instável", 60))
+    return alertas
+
+def mostrar_graficos(valores):
+    df = pd.DataFrame({
+        'Índice': list(range(1, len(valores) + 1)),
+        'Valor': valores
+    })
+
+    cores = ['red' if v < 1.5 else 'green' if v > 2.5 else 'gray' for v in valores]
+
+    st.subheader("Mini Gráfico de Barras (últimos 10)")
+    ultimos_10 = df.tail(10)
+    st.bar_chart(ultimos_10.set_index('Índice'))
+
+    st.subheader("Evolução da Média")
+    df['Média Móvel'] = df['Valor'].rolling(window=3, min_periods=1).mean()
+    st.line_chart(df.set_index('Índice')[['Valor', 'Média Móvel']])
+
+if st.session_state.valores:
+    st.subheader("Histórico (últimos 30)")
+    for valor, data in st.session_state.historico_completo[-30:]:
+        cor = "🟥" if valor < 1.5 else "🟩" if valor > 2.5 else "⬜"
+        st.write(f"{cor} {valor:.2f}x - {data}")
+
+    mostrar_graficos(st.session_state.valores)
+
+    st.subheader("Previsão e Análise Inteligente")
+    estimativa, confianca, inf, sup = prever_valor(st.session_state.valores)
+    st.info(f"Estimativa combinada: {estimativa}x")
+    st.info(f"Intervalo provável: {inf}x até {sup}x")
+    st.info(f"Nível de confiança: {confianca}%")
+
+    if confianca >= 75:
+        st.success("Alta confiança nas próximas rodadas.")
+    elif confianca >= 50:
+        st.warning("Confiança moderada. Observe antes de agir.")
+    else:
+        st.error("Confiança baixa. Alta incerteza.")
+
+    if detectar_mudanca(st.session_state.valores):
+        st.warning("Mudança brusca de padrão detectada. IA recalibrando...")
+
+    padroes = analisar_padroes(st.session_state.valores)
+    for alerta, chance in padroes:
+        st.info(f"Alerta de padrão: {alerta} ({chance}% de chance)")
+
+if st.button("Limpar dados"):
+    st.session_state.valores = []
+    st.session_state.historico_completo = []
+    st.success("Histórico limpo.")
